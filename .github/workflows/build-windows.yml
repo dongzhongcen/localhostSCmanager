@@ -52,7 +52,7 @@ jobs:
           $env:PORT = "3999"
           $env:SM_DATA_DIR = "$env:RUNNER_TEMP\sm-data"
           $env:SM_SHUTDOWN_TOKEN = "ci-token"
-          $p = Start-Process -FilePath "$dir\runtime\node.exe" -ArgumentList "app\boot.js" -WorkingDirectory "$env:RUNNER_TEMP" -PassThru -NoNewWindow `
+          $p = Start-Process -FilePath "$dir\runtime\node.exe" -ArgumentList "`"$dir\app\boot.js`"" -WorkingDirectory "$env:RUNNER_TEMP" -PassThru -NoNewWindow `
             -RedirectStandardOutput "$env:RUNNER_TEMP\smoke.log" -RedirectStandardError "$env:RUNNER_TEMP\smoke.err"
           # 注意：这里故意把工作目录设成别的地方，确认不依赖启动目录
           Start-Sleep -Seconds 1
