@@ -34,7 +34,7 @@ export function Announcement() {
         <span>v{APP_VERSION}</span>
       </button>
       <Dialog open={open} onOpenChange={handleOpenChange}>
-        <DialogContent className="bg-slate-900 border-slate-800 text-slate-100 max-w-xl max-h-[80vh] overflow-auto">
+        <DialogContent className="bg-slate-900 border-slate-800 text-slate-100 max-w-xl max-h-[80vh] overflow-auto [color-scheme:dark]">
           <DialogHeader>
             <DialogTitle className="text-white">更新公告</DialogTitle>
             <DialogDescription className="text-slate-400">当前版本 v{APP_VERSION}</DialogDescription>

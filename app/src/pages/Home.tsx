@@ -677,7 +677,7 @@ export default function Home() {
               </button>
             )}
           </div>
-          <div className="bg-slate-950 rounded-md p-4 border border-slate-800 overflow-auto max-h-[50vh]">
+          <div className="bg-slate-950 rounded-md p-4 border border-slate-800 overflow-auto max-h-[50vh] [color-scheme:dark]">
             {visibleLogs.length > 0 ? (
               <div className="space-y-1">
                 {visibleLogs.map((log, i) => (
