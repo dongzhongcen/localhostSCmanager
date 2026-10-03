@@ -1,5 +1,8 @@
 import { useState } from "react";
 import { trpc } from "@/providers/trpc";
+import { Announcement } from "@/components/Announcement";
+import { LogLine } from "@/components/LogLine";
+import { LOG_TAGS, getLogTag } from "@/lib/logTags";
 import {
   Card,
   CardContent,
@@ -197,6 +200,12 @@ export default function Home() {
     { id: selectedService ?? 0, lines: 200 },
     { enabled: logsDialogOpen && selectedService !== null, refetchInterval: logsDialogOpen ? 2000 : false }
   );
+  const [logFilter, setLogFilter] = useState<string[]>([]);
+  const visibleLogs = (logs ?? []).filter((line) => {
+    if (logFilter.length === 0) return true;
+    const tag = getLogTag(line);
+    return tag !== null && logFilter.includes(tag);
+  });
 
   const handleOpenDialog = (service?: NonNullable<typeof services>[number]) => {
     if (service) {
@@ -301,13 +310,16 @@ export default function Home() {
               <p className="text-xs text-slate-400">本地服务管理工具</p>
             </div>
           </div>
-          <Button
-            onClick={() => handleOpenDialog()}
-            className="bg-gradient-to-r from-indigo-500 to-violet-600 hover:from-indigo-400 hover:to-violet-500 text-white border-0"
-          >
-            <Plus className="w-4 h-4 mr-2" />
-            添加服务
-          </Button>
+          <div className="flex items-center gap-4">
+            <Announcement />
+            <Button
+              onClick={() => handleOpenDialog()}
+              className="bg-gradient-to-r from-indigo-500 to-violet-600 hover:from-indigo-400 hover:to-violet-500 text-white border-0"
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              添加服务
+            </Button>
+          </div>
         </div>
       </header>
 
@@ -635,16 +647,41 @@ export default function Home() {
           <DialogHeader>
             <DialogTitle className="text-white">服务日志</DialogTitle>
             <DialogDescription className="text-slate-400">
-              实时查看服务输出日志
+              实时查看服务输出，每 2 秒刷新。INFO 是管理器记录，STDOUT/STDERR 是服务输出，ERROR 是出错信息
             </DialogDescription>
           </DialogHeader>
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-slate-500">只看：</span>
+            {LOG_TAGS.map((tag) => (
+              <button
+                key={tag}
+                type="button"
+                onClick={() =>
+                  setLogFilter((prev) =>
+                    prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
+                  )
+                }
+                className={
+                  "rounded border px-2 py-0.5 font-mono transition-colors " +
+                  (logFilter.includes(tag)
+                    ? "border-indigo-400 bg-indigo-500/20 text-indigo-200"
+                    : "border-slate-700 text-slate-400 hover:text-white")
+                }
+              >
+                {tag}
+              </button>
+            ))}
+            {logFilter.length > 0 && (
+              <button type="button" onClick={() => setLogFilter([])} className="text-slate-500 hover:text-white">
+                显示全部
+              </button>
+            )}
+          </div>
           <div className="bg-slate-950 rounded-md p-4 border border-slate-800 overflow-auto max-h-[50vh]">
-            {logs && logs.length > 0 ? (
+            {visibleLogs.length > 0 ? (
               <div className="space-y-1">
-                {logs.map((log, i) => (
-                  <div key={i} className="text-xs font-mono text-slate-400 break-all">
-                    {log}
-                  </div>
+                {visibleLogs.map((log, i) => (
+                  <LogLine key={i} line={log} />
                 ))}
               </div>
             ) : (
@@ -656,9 +693,7 @@ export default function Home() {
               variant="outline"
               onClick={() => {
                 if (selectedService !== null) {
-                  utils.client.service.clearLogs.mutate({ id: selectedService });
-                  utils.service.logs.invalidate({ id: selectedService, lines: 200 });
-                  toast.success("日志已清空");
+                  clearLogsMutation.mutate({ id: selectedService });
                 }
               }}
               className="border-slate-700 text-slate-300 hover:bg-slate-800"
