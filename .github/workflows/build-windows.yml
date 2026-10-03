@@ -1,0 +1,103 @@
+name: 打包 Windows 版
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.19"
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: launcher/go.mod
+          cache-dependency-path: launcher/go.sum
+
+      - name: 安装依赖
+        working-directory: app
+        run: npm ci
+
+      - name: 类型检查、代码检查、单元测试
+        working-directory: app
+        run: |
+          npm run check
+          npm run lint
+          npm test
+
+      - name: 打包
+        working-directory: app
+        run: npm run package:win
+
+      - name: 冒烟测试：用打包出来的 node.exe 启动，检查健康接口和退出接口
+        run: |
+          $dir = "release/ServiceManager-v*-win-x64" | Resolve-Path
+          $env:NODE_ENV = "production"
+          $env:PORT = "3999"
+          $env:SM_DATA_DIR = "$env:RUNNER_TEMP\sm-data"
+          $env:SM_SHUTDOWN_TOKEN = "ci-token"
+          $p = Start-Process -FilePath "$dir\runtime\node.exe" -ArgumentList "`"$dir\app\boot.js`"" -WorkingDirectory "$env:RUNNER_TEMP" -PassThru -NoNewWindow `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\smoke.log" -RedirectStandardError "$env:RUNNER_TEMP\smoke.err"
+          # 注意：这里故意把工作目录设成别的地方，确认不依赖启动目录
+          Start-Sleep -Seconds 1
+          $ok = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            try { $r = Invoke-RestMethod http://127.0.0.1:3999/api/health; if ($r.ok) { $ok = $true; break } } catch {}
+            Start-Sleep -Seconds 1
+          }
+          Get-Content "$env:RUNNER_TEMP\smoke.log", "$env:RUNNER_TEMP\smoke.err" -ErrorAction SilentlyContinue
+          if (-not $ok) { throw "健康检查失败" }
+          Write-Host "health: $($r | ConvertTo-Json -Compress)"
+          $code = try { (Invoke-WebRequest -Method Post http://127.0.0.1:3999/api/shutdown -SkipHttpErrorCheck).StatusCode } catch { 0 }
+          if ($code -ne 403) { throw "没带口令的退出请求应该被拒绝，实际 $code" }
+          Invoke-RestMethod -Method Post http://127.0.0.1:3999/api/shutdown -Headers @{ "x-shutdown-token" = "ci-token" } | Out-Null
+          if (-not $p.WaitForExit(15000)) { throw "收到退出请求后 15 秒没有退出" }
+          if (-not (Test-Path "$env:RUNNER_TEMP\sm-data\services.db")) { throw "数据目录里没有 services.db" }
+          Write-Host "冒烟测试通过"
+
+      - name: 冒烟测试：双击 ServiceManager.exe 能启动后台
+        continue-on-error: true
+        run: |
+          $dir = "release/ServiceManager-v*-win-x64" | Resolve-Path
+          Start-Process -FilePath "$dir\ServiceManager.exe"
+          $ok = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            foreach ($port in 3000..3010) {
+              try { $r = Invoke-RestMethod "http://127.0.0.1:$port/api/health" -TimeoutSec 1; if ($r.name -eq "localhost-sc-manager") { $ok = $true; break } } catch {}
+            }
+            if ($ok) { break }
+            Start-Sleep -Seconds 1
+          }
+          Get-Content "$dir\data\logs\manager.log" -ErrorAction SilentlyContinue
+          taskkill /IM ServiceManager.exe /T /F
+          Remove-Item -Recurse -Force "$dir\data" -ErrorAction SilentlyContinue
+          if (-not $ok) { throw "exe 启动后没有等到健康检查" }
+          Write-Host "exe 启动正常（端口 $port）"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ServiceManager-win-x64
+          path: release/*.zip
+
+      - name: 发布到 Release（推送 v* 标签时）
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.zip
+          body_path: .github/release-notes.md

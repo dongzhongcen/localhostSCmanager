@@ -1,0 +1,9 @@
+# 打包输出
+release/
+
+# 运行时数据（配置数据库和日志）
+data/
+app/data/
+
+# 本地编译的启动器
+launcher/*.exe
