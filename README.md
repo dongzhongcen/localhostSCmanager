@@ -7,114 +7,142 @@
   <img alt="Hono" src="https://img.shields.io/badge/hono-4.x-e36002">
   <img alt="tRPC" src="https://img.shields.io/badge/trpc-11.x-2596be">
   <img alt="SQLite" src="https://img.shields.io/badge/sqlite-better--sqlite3%2012.x-lightgrey">
-  <img alt="Drizzle ORM" src="https://img.shields.io/badge/drizzle--orm-0.45-c5f74f">
+  <img alt="Go" src="https://img.shields.io/badge/launcher-Go-00add8">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d6">
   <img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-blue">
 </p>
 
-Service Manager 是一个在 Windows 上统一管理本地服务（如 MySQL、Redis、Nginx）的本地 Web 工具，基于 Vite + React + Hono + tRPC 构建。项目目前实现了服务的添加、编辑、删除、启动、停止、重启，管理员权限（UAC）启动，开机自动启动，以及服务日志的查看和清理。源码以发布包 `ServiceManager-v1.0.0.zip` 的形式提供在仓库中。
+Service Manager 是一个在 Windows 上统一管理本地服务（MySQL、Redis、Nginx 等）的小工具。在网页界面里添加服务的启动命令，就能一键启动、停止、重启，查看带标注的实时日志。
 
-## 功能特性
+## 📢 公告
 
-- **服务管理**：添加、编辑、删除服务，支持 MySQL / Redis / Nginx / 自定义四种类型，可配置启动命令、工作目录和 JSON 格式的环境变量。
-- **启动 / 停止 / 重启**：通过本工具启动、停止和重启服务进程，删除服务前会自动停止该服务。
-- **管理员权限**：勾选「需要管理员权限」的服务通过 Windows UAC 提权启动和停止。
-- **自动启动**：勾选「开机自动启动」的服务会在服务管理器启动时自动启动。
-- **日志查看**：查看服务最近 200 行输出，每 2 秒自动刷新，支持清空日志。
-- **退出清理**：通过 `Ctrl + C` 关闭开发服务器时，会停止所有由本工具启动的服务。
-- **本地持久化**：服务配置保存在 SQLite（better-sqlite3 + Drizzle ORM），首次启动自动建表。
+> **v1.1.0（2026-10-03）：双击 exe 就能用，告别命令行。**
+>
+> - 新增免安装的 `ServiceManager.exe`，自带运行环境，双击启动，托盘图标管理。
+> - 日志每行带时间和 `INFO` / `STDOUT` / `STDERR` / `ERROR` 标签，可按标签筛选，中文输出不再乱码。
+> - 修复停止服务后进程还在后台运行、停止后显示“错误”、带空格的路径无法启动、打包版无法启动等问题。
+> - 安全：默认只允许本机访问管理界面。
+>
+> 从 v1.0.0 升级：把旧版的 `service-manager\app\data` 文件夹复制到新版 `ServiceManager.exe` 旁边即可保留配置。完整内容见 [CHANGELOG.md](CHANGELOG.md)。
 
-## 项目结构
+## 下载和使用（推荐）
 
-仓库根目录：
+1. 到 [Releases](https://github.com/dongzhongcen/localhostSCmanager/releases) 下载 `ServiceManager-v1.1.0-win-x64.zip`。
+2. 解压到任意目录，例如 `D:\Tools\ServiceManager\`。
+3. 双击 `ServiceManager.exe`。
 
-```text
-.
-├── ServiceManager-v1.0.0.zip   # 发布包（包含完整源码）
-├── 使用说明.md                  # 详细使用说明和常见问题
-├── build-release.ps1           # 打包脚本：清理后生成发布 zip
-├── clean-for-release.ps1       # 清理脚本：删除 .env、数据库、日志、依赖和构建产物
-└── LICENSE                     # GPL-3.0
-```
+几秒后浏览器会自动打开管理界面（默认 http://localhost:3000 ），任务栏右下角出现托盘图标：
 
-发布包解压后：
+| 托盘菜单 | 作用 |
+| --- | --- |
+| 打开管理界面 | 在浏览器里打开（左键单击图标也可以） |
+| 查看运行日志 | 打开 `data\logs` 文件夹 |
+| 退出（停止所有服务） | 停止所有由本工具启动的服务，然后退出 |
+
+不需要安装 Node.js，也不用打开命令行。再次双击 exe 不会重复启动，只会打开管理界面。
+
+解压后的目录：
 
 ```text
 ServiceManager/
-├── app/                        # 主应用（备用）
-├── service-manager/
-│   └── app/                    # 服务管理器主程序
-│       ├── api/                # Hono + tRPC 后端，services/processManager.ts 负责进程管理
-│       ├── src/                # React 前端（Tailwind CSS + shadcn/ui）
-│       ├── db/                 # Drizzle Schema 和初始化
-│       └── data/               # 运行数据（SQLite 数据库和日志）
-└── 使用说明.md
+├── ServiceManager.exe     # 双击启动
+├── runtime/node.exe       # 自带的 Node 运行环境
+├── app/                   # 后台程序和网页界面
+├── data/                  # 首次运行时创建
+│   ├── services.db        # 服务配置
+│   └── logs/
+│       ├── service_1.log  # 每个服务的日志
+│       └── manager.log    # 管理器自己的运行日志，出问题先看这里
+└── 使用说明.txt
 ```
 
-## 快速开始
+服务启动命令示例（MySQL、Redis、Nginx）和常见问题见 [使用说明.md](使用说明.md)。
+
+## 功能
+
+- **服务管理**：添加、编辑、删除服务，支持 MySQL / Redis / Nginx / 自定义四种类型，可配置启动命令、工作目录和 JSON 格式的环境变量。
+- **启动 / 停止 / 重启**：停止时会结束整个进程树，不会留下后台进程；删除服务前会自动停止。
+- **管理员权限**：勾选「需要管理员权限」的服务通过 Windows UAC 提权启动和停止。
+- **自动启动**：勾选「开机自动启动」的服务会在服务管理器启动时自动启动。
+- **日志标注**：每行日志的格式是 `[2026-10-03 21:55:01] [STDOUT] 内容`，界面里按标签着色、可筛选，每 2 秒刷新。
+
+  | 标签 | 含义 |
+  | --- | --- |
+  | `INFO` | 管理器自己的记录：启动命令、工作目录、停止、退出码 |
+  | `STDOUT` | 服务的标准输出 |
+  | `STDERR` | 服务的标准错误输出（很多程序也会把普通信息写在这里） |
+  | `ERROR` | 出错：异常退出、命令不存在、工作目录不存在、提权失败 |
+
+  管理员权限启动的服务不是本工具的子进程，它的输出只能原样写入日志，没有时间和标签。
+- **更新公告**：界面右上角显示版本号，点击查看更新公告；升级后第一次打开会自动弹出。
+- **退出清理**：从托盘退出或按 `Ctrl + C` 时，会停止所有由本工具启动的服务。
+- **只允许本机访问**：默认监听 `127.0.0.1`，局域网里的其他电脑打不开管理界面。
+
+## 开发
 
 ### 环境要求
 
-- Windows 10 / Windows 11
-- Node.js 20.19+ 或 22.12+（Vite 7 要求 `^20.19.0 || >=22.12.0`）
-- npm
+- Node.js 20.19+ 或 22.12+（Vite 7 的要求）
+- Go 1.24+（只有打包 exe 时需要）
 
-### 安装
+### 项目结构
 
-解压 `ServiceManager-v1.0.0.zip` 到任意目录（例如 `D:\Tools\ServiceManager\`），然后安装依赖：
+```text
+.
+├── app/                       # 主程序（Vite + React + Hono + tRPC）
+│   ├── api/                   # 后端
+│   │   ├── boot.ts            # 入口：tRPC、/api/health、/api/shutdown、静态文件
+│   │   ├── lib/env.ts         # 配置：PORT、HOST、SM_DATA_DIR
+│   │   └── services/
+│   │       ├── processManager.ts  # 启动 / 停止进程、状态、日志
+│   │       └── logFormat.ts       # 日志标注格式、GBK 转码
+│   ├── contracts/version.ts   # 版本号和更新公告内容
+│   ├── db/                    # Drizzle Schema 和初始化
+│   ├── src/                   # React 前端（Tailwind CSS + shadcn/ui）
+│   └── scripts/package-win.mjs  # 打包 Windows 免安装版
+├── launcher/                  # ServiceManager.exe 启动器（Go，托盘图标）
+├── .github/workflows/         # GitHub Actions：Windows 上自动打包和测试
+├── CHANGELOG.md
+└── 使用说明.md
+```
+
+### 常用命令
+
+在 `app` 目录下：
 
 ```powershell
-cd ServiceManager\service-manager\app
 npm install
+npm run dev          # 开发模式，http://localhost:3000
+npm run dev:admin    # 以管理员身份运行开发服务器
+npm run build        # 构建到 dist/
+npm start            # 运行构建结果（生产模式）
+npm test             # 单元测试
+npm run check        # TypeScript 类型检查
+npm run lint         # 代码检查
+npm run package:win  # 打包成 release/ServiceManager-v<版本>-win-x64.zip
 ```
 
-### 启动
+`npm run package:win` 在 Windows 和 Linux 上都能运行，会编译 `ServiceManager.exe`，并带上与当前 Node 同版本的 Windows 版 `node.exe` 和 better-sqlite3 预编译文件。
 
-```powershell
-npm run dev
-```
+### 配置
 
-开发服务器端口在 `vite.config.ts` 中配置为 `3000`，启动后在浏览器中打开 http://localhost:3000 。
+都是可选的，见 `app/.env.example`：
 
-如需以管理员身份启动整个开发服务器：
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `PORT` | `3000` | 管理界面端口 |
+| `HOST` | `127.0.0.1` | 监听地址，改成 `0.0.0.0` 局域网也能访问（有安全风险） |
+| `SM_DATA_DIR` | 启动目录下的 `data/` | 配置数据库和日志的位置；exe 版固定为程序目录下的 `data\` |
 
-```powershell
-npm run dev:admin
-```
+### 发布新版本
 
-### 类型检查与代码检查
+1. 修改 `app/package.json` 的 `version` 和 `app/contracts/version.ts`（版本号和更新公告）。
+2. 在 `CHANGELOG.md` 和本 README 的公告里写上新版本内容，更新 `.github/release-notes.md`。
+3. 合并到 `main` 后推送标签，例如 `git tag v1.1.0 && git push origin v1.1.0`，GitHub Actions 会自动打包并发布到 Releases。
 
-```powershell
-npm run check   # TypeScript 类型检查
-npm run lint
-```
+## 注意
 
-### 打包发布
-
-在包含 `app/` 和 `service-manager/` 源码目录的工作目录中执行：
-
-```powershell
-.\build-release.ps1
-```
-
-脚本会先运行 `clean-for-release.ps1`，删除 `.env`、数据库、日志、`node_modules` 和 `dist`，再生成 `ServiceManager-v1.0.0.zip`。
-
-更多服务启动命令示例（MySQL、Redis、Nginx）和常见问题见 [使用说明.md](使用说明.md)。
-
-## 当前状态
-
-项目已完成本地服务管理的核心功能，当前发布版本为 v1.0.0。本工具仅用于本地开发环境的服务管理，请勿用于生产环境；使用管理员权限启动服务时，请确保了解该服务的安全性。后续可继续完善：
-
-- 将源码直接提交到仓库，而不仅以 zip 形式提供
-- 统一 `使用说明.md` 中的 Node.js 版本和访问端口与实际配置
-- 合并或移除发布包中重复的 `app/` 备用目录
-- 清理脚手架遗留的依赖和配置（如 `mysql2`、`.env.example` 中的 MySQL / JWT 配置）
-- 增加单元测试（已配置 vitest，但暂无测试文件）
-- 让 `npm start` 在 Windows 下可用（当前使用 `NODE_ENV=production` 的 Unix 写法）
-
-## 数据和敏感信息
-
-运行数据（`data/services.db`、`data/logs/`）和 `.env` 文件不应提交或打包，发布前由 `clean-for-release.ps1` 清理。
+本工具只用于本地开发环境的服务管理，请勿用于生产环境。它会执行你填写的任意命令；使用管理员权限启动服务时，请确保了解该服务的安全性。
 
 ## 许可证
 
