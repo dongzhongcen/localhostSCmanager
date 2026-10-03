@@ -12,20 +12,22 @@
   <img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-blue">
 </p>
 
-Service Manager 是一个在 Windows 上统一管理本地服务（MySQL、Redis、Nginx 等）的小工具。在网页界面里添加服务的启动命令，就能一键启动、停止、重启，查看带标注的实时日志。
+这是我写的一个 Windows 本地服务管理小工具。本地开发时经常要同时开 MySQL、Redis、Nginx，每个都开一个命令行窗口很乱，关的时候还容易漏掉，所以我把它们集中到一个网页界面里：添加好启动命令后，就能一键启动、停止、重启，还能看带标注的实时日志。
 
 ## 📢 公告
 
-> **v1.1.0（2026-10-03）：双击 exe 就能用，告别命令行。**
+> **v1.1.0（2026-10-03）：这一版的重点是双击 exe 就能用，告别命令行。**
 >
 > - 新增免安装的 `ServiceManager.exe`，自带运行环境，双击启动，托盘图标管理。
 > - 日志每行带时间和 `INFO` / `STDOUT` / `STDERR` / `ERROR` 标签，可按标签筛选，中文输出不再乱码。
 > - 修复停止服务后进程还在后台运行、停止后显示“错误”、带空格的路径无法启动、打包版无法启动等问题。
 > - 安全：默认只允许本机访问管理界面。
 >
-> 从 v1.0.0 升级：把旧版的 `service-manager\app\data` 文件夹复制到新版 `ServiceManager.exe` 旁边即可保留配置。完整内容见 [CHANGELOG.md](CHANGELOG.md)。
+> 如果你在用 v1.0.0，把旧版的 `service-manager\app\data` 文件夹复制到新版 `ServiceManager.exe` 旁边，原来的配置就都还在。完整改动我记在了 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 下载和使用（推荐）
+
+最省事的用法是直接下载我打包好的免安装版：
 
 1. 到 [Releases](https://github.com/dongzhongcen/localhostSCmanager/releases) 下载 `ServiceManager-v1.1.0-win-x64.zip`。
 2. 解压到任意目录，例如 `D:\Tools\ServiceManager\`。
@@ -39,7 +41,7 @@ Service Manager 是一个在 Windows 上统一管理本地服务（MySQL、Redis
 | 查看运行日志 | 打开 `data\logs` 文件夹 |
 | 退出（停止所有服务） | 停止所有由本工具启动的服务，然后退出 |
 
-不需要安装 Node.js，也不用打开命令行。再次双击 exe 不会重复启动，只会打开管理界面。
+我把 Node 运行环境一起打包进去了，所以不需要另外安装 Node.js，也不用打开命令行。再次双击 exe 不会重复启动，只会打开管理界面。
 
 解压后的目录：
 
@@ -56,9 +58,11 @@ ServiceManager/
 └── 使用说明.txt
 ```
 
-服务启动命令示例（MySQL、Redis、Nginx）和常见问题见 [使用说明.md](使用说明.md)。
+MySQL、Redis、Nginx 的启动命令示例和常见问题，我整理在 [使用说明.md](使用说明.md) 里。
 
 ## 功能
+
+目前实现了这些：
 
 - **服务管理**：添加、编辑、删除服务，支持 MySQL / Redis / Nginx / 自定义四种类型，可配置启动命令、工作目录和 JSON 格式的环境变量。
 - **启动 / 停止 / 重启**：停止时会结束整个进程树，不会留下后台进程；删除服务前会自动停止。
@@ -73,12 +77,14 @@ ServiceManager/
   | `STDERR` | 服务的标准错误输出（很多程序也会把普通信息写在这里） |
   | `ERROR` | 出错：异常退出、命令不存在、工作目录不存在、提权失败 |
 
-  管理员权限启动的服务不是本工具的子进程，它的输出只能原样写入日志，没有时间和标签。
+  有一个限制：管理员权限启动的服务不是本工具的子进程，我拿不到它的输出流，只能原样写入日志，所以这类日志没有时间和标签。
 - **更新公告**：界面右上角显示版本号，点击查看更新公告；升级后第一次打开会自动弹出。
 - **退出清理**：从托盘退出或按 `Ctrl + C` 时，会停止所有由本工具启动的服务。
 - **只允许本机访问**：默认监听 `127.0.0.1`，局域网里的其他电脑打不开管理界面。
 
 ## 开发
+
+如果你想自己改代码或者从源码运行：
 
 ### 环境要求
 
@@ -136,13 +142,15 @@ npm run package:win  # 打包成 release/ServiceManager-v<版本>-win-x64.zip
 
 ### 发布新版本
 
+我自己发版的步骤：
+
 1. 修改 `app/package.json` 的 `version` 和 `app/contracts/version.ts`（版本号和更新公告）。
 2. 在 `CHANGELOG.md` 和本 README 的公告里写上新版本内容，更新 `.github/release-notes.md`。
 3. 合并到 `main` 后推送标签，例如 `git tag v1.1.0 && git push origin v1.1.0`，GitHub Actions 会自动打包并发布到 Releases。
 
 ## 注意
 
-本工具只用于本地开发环境的服务管理，请勿用于生产环境。它会执行你填写的任意命令；使用管理员权限启动服务时，请确保了解该服务的安全性。
+这个工具是我为本地开发环境写的，请不要用在生产环境。它会执行你填写的任意命令，用管理员权限启动服务前，请先确认你了解这个服务的安全性。有问题或建议欢迎提 [Issue](https://github.com/dongzhongcen/localhostSCmanager/issues)。
 
 ## 许可证
 
