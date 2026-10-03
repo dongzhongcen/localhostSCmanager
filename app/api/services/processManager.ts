@@ -547,12 +547,15 @@ export function cleanupProcesses() {
     const db = getDb();
     const runningServices = db.select().from(services).where(eq(services.status, "running")).all();
     for (const service of runningServices) {
-      if (service.pid && !(service.requireAdmin && isWindows)) {
-        killTree(service.pid, true);
+      if (service.requireAdmin && isWindows) {
+        // 结束管理员权限的进程需要 UAC 确认，退出时没法弹窗，保留它的运行记录，下次启动还能在界面里停止
+        appendLog(service.id, "INFO", "服务管理器退出；这个服务是管理员权限启动的，仍在运行，需要在界面里手动停止");
+        continue;
       }
+      if (service.pid) killTree(service.pid, true);
       appendLog(service.id, "INFO", "服务管理器退出，服务已停止");
+      db.update(services).set({ status: "stopped", pid: null }).where(eq(services.id, service.id)).run();
     }
-    db.update(services).set({ status: "stopped", pid: null }).where(eq(services.status, "running")).run();
   } catch {
     // Ignore errors during cleanup
   }
