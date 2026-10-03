@@ -7,9 +7,10 @@ import path from "path";
 type App = Hono<{ Bindings: HttpBindings }>;
 
 export function serveStaticFiles(app: App) {
-  const distPath = path.resolve(import.meta.dirname, "../dist/public");
-
-  app.use("*", serveStatic({ root: "./dist/public" }));
+  // 打包后 boot.js 和 public/ 在同一个目录，用 boot.js 所在位置定位，
+  // 不依赖当前工作目录（双击 exe 时工作目录不一定是程序目录）
+  const distPath = path.resolve(import.meta.dirname, "public");
+  app.use("*", serveStatic({ root: distPath }));
 
   app.notFound((c) => {
     const accept = c.req.header("accept") ?? "";

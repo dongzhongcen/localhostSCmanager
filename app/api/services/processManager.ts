@@ -1,26 +1,37 @@
-import { spawn, type ChildProcess, exec } from "child_process";
+import { spawn, spawnSync, type ChildProcess, exec } from "child_process";
 import { promisify } from "util";
 import { getDb } from "../queries/connection";
 import { services } from "@db/schema";
 import { eq } from "drizzle-orm";
 import path from "path";
 import fs from "fs";
+import { env as appEnv } from "../lib/env";
+import { createLineTagger, formatLine, type LogTag } from "./logFormat";
 
 const execAsync = promisify(exec);
+const isWindows = process.platform === "win32";
 
+/** 由本工具直接启动（非提权）的进程 */
 const runningProcesses = new Map<number, ChildProcess>();
+/** 正在被主动停止的服务：它们退出时记为“已停止”而不是“出错” */
+const stoppingServices = new Set<number>();
 
-// Ensure logs directory exists
-const logsDir = path.join(process.cwd(), "data", "logs");
-if (!fs.existsSync(logsDir)) {
-  fs.mkdirSync(logsDir, { recursive: true });
-}
+const logsDir = appEnv.logsDir;
 
 function getLogPath(serviceId: number) {
   return path.join(logsDir, `service_${serviceId}.log`);
 }
 
-function parseCommand(command: string) {
+/** 追加一行带时间和标签的日志；文件被其他进程占用时忽略 */
+function appendLog(serviceId: number, tag: LogTag, text: string) {
+  try {
+    fs.appendFileSync(getLogPath(serviceId), formatLine(tag, text));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EBUSY") throw err;
+  }
+}
+
+export function parseCommand(command: string) {
   // Simple command parsing - handle quotes
   const args: string[] = [];
   let current = "";
@@ -55,19 +66,21 @@ function parseCommand(command: string) {
   };
 }
 
+/** 从启动命令推出可执行文件名，比如 "C:\\Redis\\redis-server.exe" a.conf → redis-server.exe */
+function getExeName(command: string) {
+  const { command: cmd } = parseCommand(command);
+  let exeName = path.win32.basename(cmd);
+  if (isWindows && exeName && !exeName.includes(".")) exeName += ".exe";
+  return exeName;
+}
+
 async function isProcessRunningAsync(pid: number): Promise<boolean> {
-  if (process.platform === "win32") {
+  if (isWindows) {
     try {
-      const { stdout } = await execAsync(`tasklist /FI "PID eq ${pid}" /NH`);
-      return stdout.includes(pid.toString());
+      const { stdout } = await execAsync(`tasklist /FI "PID eq ${pid}" /NH /FO CSV`);
+      return stdout.includes(`"${pid}"`);
     } catch {
-      // Fallback to process.kill for quick check
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
+      // fall through
     }
   }
   try {
@@ -79,15 +92,41 @@ async function isProcessRunningAsync(pid: number): Promise<boolean> {
 }
 
 async function findProcessByName(name: string): Promise<number | null> {
-  if (process.platform !== "win32") return null;
+  if (!isWindows) return null;
   try {
-    const { stdout } = await execAsync(`tasklist /FI "IMAGENAME eq ${name}" /NH`);
-    const lines = stdout.trim().split("\n").filter((l) => l.trim());
-    if (lines.length === 0) return null;
-    const match = lines[0].match(/\s+(\d+)\s+/);
+    // CSV 格式："mysqld.exe","1234","Console","1","12,345 K"
+    const { stdout } = await execAsync(`tasklist /FI "IMAGENAME eq ${name}" /NH /FO CSV`);
+    const match = stdout.match(/^"[^"]+","(\d+)"/m);
     return match ? parseInt(match[1], 10) : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * 结束整个进程树。
+ * 启动命令是通过 shell 运行的（Windows 上是 cmd.exe），只杀 shell 的话，
+ * 真正的服务进程（mysqld.exe、redis-server.exe……）会继续在后台运行，
+ * 所以 Windows 上用 taskkill /T 连子进程一起结束，其他系统杀整个进程组。
+ */
+function killTree(pid: number, sync = false) {
+  if (isWindows) {
+    const args = ["/PID", pid.toString(), "/T", "/F"];
+    if (sync) {
+      spawnSync("taskkill", args, { windowsHide: true });
+    } else {
+      spawn("taskkill", args, { windowsHide: true }).on("error", () => {});
+    }
+    return;
+  }
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // already dead
+    }
   }
 }
 
@@ -132,6 +171,22 @@ async function stopElevatedProcess(pid: number): Promise<boolean> {
   });
 }
 
+function buildEnv(envVars: string | null) {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) env[key] = value;
+  }
+  // 这些是服务管理器自己的配置，不需要传给被管理的服务
+  delete env.SM_SHUTDOWN_TOKEN;
+  if (envVars) {
+    try {
+      Object.assign(env, JSON.parse(envVars));
+    } catch {
+      // Ignore invalid env JSON
+    }
+  }
+  return env;
+}
 
 export async function startService(serviceId: number) {
   const db = getDb();
@@ -147,124 +202,101 @@ export async function startService(serviceId: number) {
   }
 
   // For elevated starts, also check by process name if PID is missing
-  if (!service.pid && service.status === "running" && service.requireAdmin && process.platform === "win32") {
-    const { command: cmd } = parseCommand(service.command);
-    let exeName = path.basename(cmd);
-    if (exeName && !exeName.includes(".")) exeName += ".exe";
+  if (!service.pid && service.status === "running" && service.requireAdmin && isWindows) {
+    const exeName = getExeName(service.command);
     if (exeName) {
       const foundPid = await findProcessByName(exeName);
       if (foundPid) {
-        db.update(services)
-          .set({ pid: foundPid })
-          .where(eq(services.id, serviceId))
-          .run();
+        db.update(services).set({ pid: foundPid }).where(eq(services.id, serviceId)).run();
         return { success: true, message: "Service is already running", pid: foundPid };
       }
     }
   }
 
   const { command, args } = parseCommand(service.command);
-  
   if (!command) {
     throw new Error("Invalid command");
   }
 
-  // Parse environment variables
-  const env: Record<string, string> = {};
-  if (process.env) {
-    for (const [key, value] of Object.entries(process.env)) {
-      if (value !== undefined) {
-        env[key] = value;
-      }
-    }
-  }
-  if (service.envVars) {
-    try {
-      const customEnv = JSON.parse(service.envVars);
-      Object.assign(env, customEnv);
-    } catch {
-      // Ignore invalid env JSON
-    }
+  const env = buildEnv(service.envVars);
+  const cwd = service.cwd || process.cwd();
+
+  if (cwd && !fs.existsSync(cwd)) {
+    appendLog(serviceId, "ERROR", `工作目录不存在：${cwd}`);
+    db.update(services).set({ status: "error", pid: null }).where(eq(services.id, serviceId)).run();
+    return { success: false, message: `工作目录不存在：${cwd}` };
   }
 
   // Use elevated privileges on Windows if required
-  if (service.requireAdmin && process.platform === "win32") {
+  if (service.requireAdmin && isWindows) {
     return startElevatedService(service, serviceId, command, args, env);
   }
 
-  // Open log file
-  const logPath = getLogPath(serviceId);
-  const logStream = fs.createWriteStream(logPath, { flags: "a" });
+  const logStream = fs.createWriteStream(getLogPath(serviceId), { flags: "a" });
+  const write = (line: string) => logStream.write(line);
+  write(formatLine("INFO", `启动服务：${service.name}`));
+  write(formatLine("INFO", `命令：${service.command}`));
+  write(formatLine("INFO", `工作目录：${cwd}`));
 
-  const now = new Date().toISOString();
-  logStream.write(`\n[${now}] Starting service: ${service.name}\n`);
-  logStream.write(`[${now}] Command: ${service.command}\n`);
-
-  const child = spawn(command, args, {
-    cwd: service.cwd || process.cwd(),
+  // 整条命令原样交给 shell 执行，保留用户写的引号，
+  // 这样 "C:\Program Files\..." 这类带空格的路径不会被拆开
+  const child = spawn(service.command, {
+    cwd,
     env,
-    detached: false,
     shell: true,
+    detached: !isWindows, // 非 Windows 下单独成组，方便整组结束
     windowsHide: true, // Hide console window on Windows
   });
 
-  // Store reference
   runningProcesses.set(serviceId, child);
 
-  child.stdout?.on("data", (data: Buffer) => {
-    logStream.write(`[${new Date().toISOString()}] [STDOUT] ${data.toString()}`);
-  });
+  const out = createLineTagger("STDOUT", write);
+  const err = createLineTagger("STDERR", write);
+  child.stdout?.on("data", (data: Buffer) => out.push(data));
+  child.stderr?.on("data", (data: Buffer) => err.push(data));
 
-  child.stderr?.on("data", (data: Buffer) => {
-    logStream.write(`[${new Date().toISOString()}] [STDERR] ${data.toString()}`);
-  });
-
-  child.on("exit", (code) => {
-    const exitTime = new Date().toISOString();
-    logStream.write(`[${exitTime}] Process exited with code ${code}\n`);
+  let finished = false;
+  const finish = (status: "stopped" | "error", message: string, tag: LogTag) => {
+    if (finished) return;
+    finished = true;
+    out.flush();
+    err.flush();
+    write(formatLine(tag, message));
     logStream.end();
 
-    runningProcesses.delete(serviceId);
+    // 只有当前记录的还是这个进程时才更新，避免覆盖重启后新进程的状态
+    if (runningProcesses.get(serviceId) === child) {
+      runningProcesses.delete(serviceId);
+    }
+    const current = db.select().from(services).where(eq(services.id, serviceId)).get();
+    if (current && (current.pid === child.pid || current.pid === null)) {
+      db.update(services).set({ status, pid: null }).where(eq(services.id, serviceId)).run();
+    }
+  };
 
-    // Update status in database
-    db.update(services)
-      .set({
-        status: code === 0 ? "stopped" : "error",
-        pid: null,
-      })
-      .where(eq(services.id, serviceId))
-      .run();
+  child.on("exit", (code, signal) => {
+    const stopping = stoppingServices.delete(serviceId);
+    if (stopping) {
+      finish("stopped", "服务已停止", "INFO");
+    } else if (code === 0) {
+      finish("stopped", "进程正常退出（退出码 0）", "INFO");
+    } else {
+      finish("error", `进程异常退出（退出码 ${code ?? "无"}${signal ? `，信号 ${signal}` : ""}）`, "ERROR");
+    }
   });
 
-  child.on("error", (err) => {
-    logStream.write(`[${new Date().toISOString()}] [ERROR] ${err.message}\n`);
-    logStream.end();
-    runningProcesses.delete(serviceId);
-
-    db.update(services)
-      .set({
-        status: "error",
-        pid: null,
-      })
-      .where(eq(services.id, serviceId))
-      .run();
+  child.on("error", (e) => {
+    stoppingServices.delete(serviceId);
+    finish("error", `启动失败：${e.message}`, "ERROR");
   });
 
-  // Update database with PID
   const pid = child.pid;
   if (pid) {
-    db.update(services)
-      .set({
-        status: "running",
-        pid,
-      })
-      .where(eq(services.id, serviceId))
-      .run();
+    db.update(services).set({ status: "running", pid }).where(eq(services.id, serviceId)).run();
   }
 
   return { success: true, message: "Service started", pid };
 }
-
 async function startElevatedService(
   service: typeof services.$inferSelect,
   serviceId: number,
@@ -276,20 +308,17 @@ async function startElevatedService(
   const logPath = getLogPath(serviceId);
   const cwd = service.cwd || process.cwd();
 
-  // Write startup log (skip if file is locked by a running process)
-  const now = new Date().toISOString();
-  try {
-    fs.appendFileSync(logPath, `\n[${now}] Starting service (admin elevated): ${service.name}\n`);
-    fs.appendFileSync(logPath, `[${now}] Command: ${service.command}\n`);
-  } catch (err: any) {
-    if (err.code !== "EBUSY") throw err;
-    // File is locked by a running process; startup info will be in the batch file output
-  }
+  appendLog(serviceId, "INFO", `启动服务（管理员权限）：${service.name}`);
+  appendLog(serviceId, "INFO", `命令：${service.command}`);
+  appendLog(serviceId, "INFO", `工作目录：${cwd}`);
+  appendLog(serviceId, "INFO", "提示：管理员权限启动的服务，输出会原样写入日志，不带时间和标签");
 
-  // Build a batch script that sets env vars, changes dir, runs the command and redirects output
+  // 提权后的进程不是本程序的子进程，拿不到它的输出流，
+  // 只能写一个批处理脚本，把输出重定向到日志文件
   const batchPath = path.join(logsDir, `run_service_${serviceId}.bat`);
   const batchLines = [
     "@echo off",
+    "chcp 65001 >nul", // 批处理按 UTF-8 写入，切到 UTF-8 代码页，中文路径才不会乱
     ...Object.entries(env).map(([k, v]) => `set "${k}=${v.replace(/"/g, '\\"')}"`),
     `cd /d "${cwd}"`,
     `"${command}" ${args
@@ -303,10 +332,8 @@ async function startElevatedService(
   ];
   fs.writeFileSync(batchPath, batchLines.join("\r\n"));
 
-  // Use PowerShell to start the batch file directly with elevation
-  // (Windows will auto-use cmd.exe to run .bat files)
   const psScript = `
-    $batchPath = '${batchPath}';
+    $batchPath = '${batchPath.replace(/'/g, "''")}';
     try {
       $proc = Start-Process -FilePath $batchPath -Verb runAs -WindowStyle Hidden -PassThru
       if ($proc.Id) {
@@ -321,7 +348,7 @@ async function startElevatedService(
     }
   `;
 
-  return new Promise<{ success: boolean; message: string; pid?: number }>((resolve, reject) => {
+  return new Promise<{ success: boolean; message: string; pid?: number }>((resolve) => {
     const ps = spawn("powershell", ["-NoProfile", "-Command", psScript], {
       windowsHide: true,
     });
@@ -335,62 +362,45 @@ async function startElevatedService(
 
     ps.stderr?.on("data", (data: Buffer) => {
       errorOutput += data.toString();
-      fs.appendFileSync(logPath, `[${new Date().toISOString()}] [PS-ERR] ${data.toString()}`);
     });
 
     ps.on("close", (code) => {
       if (code !== 0) {
-        const errMsg = errorOutput.trim() || "Failed to start elevated process";
-        fs.appendFileSync(logPath, `[${new Date().toISOString()}] [ERROR] ${errMsg}\n`);
-        db.update(services)
-          .set({ status: "error", pid: null })
-          .where(eq(services.id, serviceId))
-          .run();
+        const errMsg = errorOutput.trim() || "提权启动失败（可能在 UAC 弹窗里点了“否”）";
+        appendLog(serviceId, "ERROR", errMsg);
+        db.update(services).set({ status: "error", pid: null }).where(eq(services.id, serviceId)).run();
         resolve({ success: false, message: errMsg });
         return;
       }
 
       const pidMatch = output.trim().match(/\d+/);
-      const pid = pidMatch ? parseInt(pidMatch[0], 10) : NaN;
-      if (!isNaN(pid)) {
-        // Create a minimal ChildProcess-like object for tracking
-        const mockChild = {
-          pid,
-          killed: false,
-          kill: (_signal?: string) => {
-            try {
-              spawn("taskkill", ["/PID", pid.toString(), "/F", "/T"], { windowsHide: true });
-            } catch {
-              // ignore
-            }
-          },
-          stdout: null,
-          stderr: null,
-          on: () => {},
-        } as unknown as ChildProcess;
-
-        runningProcesses.set(serviceId, mockChild);
-
-        db.update(services)
-          .set({ status: "running", pid })
-          .where(eq(services.id, serviceId))
-          .run();
-
-        resolve({ success: true, message: "Service started with admin privileges", pid });
-      } else {
-        // UAC may have been shown but we couldn't capture PID
-        db.update(services)
-          .set({ status: "running", pid: null })
-          .where(eq(services.id, serviceId))
-          .run();
-
-        resolve({ success: true, message: "Service started with admin privileges (PID unavailable)", pid: undefined });
-      }
+      const pid = pidMatch ? parseInt(pidMatch[0], 10) : undefined;
+      db.update(services)
+        .set({ status: "running", pid: pid ?? null })
+        .where(eq(services.id, serviceId))
+        .run();
+      resolve({
+        success: true,
+        message: pid ? "Service started with admin privileges" : "Service started with admin privileges (PID unavailable)",
+        pid,
+      });
     });
 
     ps.on("error", (err) => {
-      fs.appendFileSync(logPath, `[${new Date().toISOString()}] [ERROR] ${err.message}\n`);
-      reject(err);
+      appendLog(serviceId, "ERROR", `无法调用 PowerShell：${err.message}`);
+      db.update(services).set({ status: "error", pid: null }).where(eq(services.id, serviceId)).run();
+      resolve({ success: false, message: err.message });
+    });
+  });
+}
+
+function waitForExit(child: ChildProcess, timeoutMs: number) {
+  return new Promise<boolean>((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) return resolve(true);
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve(true);
     });
   });
 }
@@ -406,73 +416,59 @@ export async function stopService(serviceId: number) {
   let targetPid = service.pid;
 
   // If PID is missing for an elevated process, try to find it by process name
-  if (!targetPid && service.requireAdmin && process.platform === "win32") {
-    const { command: cmd } = parseCommand(service.command);
-    let exeName = path.basename(cmd);
-    if (exeName && !exeName.includes(".")) exeName += ".exe";
+  if (!targetPid && service.requireAdmin && isWindows) {
+    const exeName = getExeName(service.command);
     if (exeName) {
       targetPid = await findProcessByName(exeName);
     }
   }
 
   let stopped = false;
+  const child = runningProcesses.get(serviceId);
 
-  // For elevated Windows processes, use UAC to run taskkill
-  if (service.requireAdmin && process.platform === "win32" && targetPid) {
+  if (service.requireAdmin && isWindows && targetPid) {
+    // 管理员权限启动的进程，要再弹一次 UAC 才能结束
     stopped = await stopElevatedProcess(targetPid);
-  } else {
-    const child = runningProcesses.get(serviceId);
-
-    if (child) {
-      // Try graceful kill first
-      child.kill("SIGTERM");
-      
-      // Force kill after 5 seconds if still running
-      setTimeout(() => {
-        if (!child.killed) {
-          child.kill("SIGKILL");
-        }
-      }, 5000);
-
-      runningProcesses.delete(serviceId);
-      stopped = true;
-    } else if (targetPid) {
-      // Try to kill by PID if we have it but not in memory
-      if (process.platform === "win32") {
-        try {
-          spawn("taskkill", ["/PID", targetPid.toString(), "/F", "/T"], { windowsHide: true });
-          stopped = true;
-        } catch {
-          // Process already dead
-        }
-      } else {
-        try {
-          process.kill(targetPid, "SIGTERM");
-          stopped = true;
-        } catch {
-          // Process already dead
-        }
+    if (stopped) appendLog(serviceId, "INFO", "服务已停止（管理员权限）");
+  } else if (child && child.pid) {
+    stoppingServices.add(serviceId);
+    killTree(child.pid);
+    stopped = await waitForExit(child, 5000);
+    if (!stopped && !isWindows) {
+      // SIGTERM 5 秒还没退出，强制结束
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        // ignore
       }
+      stopped = await waitForExit(child, 2000);
     }
+  } else if (targetPid) {
+    // 进程不是这次启动的（比如服务管理器重启过），按 PID 结束
+    if (await isProcessRunningAsync(targetPid)) {
+      killTree(targetPid, true);
+    }
+    stopped = !(await isProcessRunningAsync(targetPid));
+    if (stopped) appendLog(serviceId, "INFO", `已按 PID ${targetPid} 结束服务`);
+  } else {
+    // 没有记录到任何进程，视为已停止
+    stopped = true;
   }
 
   if (stopped) {
-    db.update(services)
-      .set({
-        status: "stopped",
-        pid: null,
-      })
-      .where(eq(services.id, serviceId))
-      .run();
+    db.update(services).set({ status: "stopped", pid: null }).where(eq(services.id, serviceId)).run();
+  } else {
+    stoppingServices.delete(serviceId);
   }
 
   return { success: stopped, message: stopped ? "Service stopped" : "Failed to stop service (UAC may be required)" };
 }
 
 export async function restartService(serviceId: number) {
-  await stopService(serviceId);
-  // Wait a bit for the process to fully stop
-  await new Promise((resolve) => setTimeout(resolve, 1000));
+  const result = await stopService(serviceId);
+  if (!result.success) return result;
+  // 给端口释放留一点时间
+  await new Promise((resolve) => setTimeout(resolve, 500));
   return startService(serviceId);
 }
 
@@ -484,7 +480,7 @@ export function getServiceLogs(serviceId: number, lines: number = 100) {
   }
 
   const content = fs.readFileSync(logPath, "utf-8");
-  const allLines = content.split("\n").filter((l) => l.trim());
+  const allLines = content.split(/\r?\n/).filter((l) => l.trim());
   return allLines.slice(-lines);
 }
 
@@ -510,75 +506,52 @@ export async function getServiceStatus(serviceId: number) {
   if (!service.pid) {
     if (service.status === "running") {
       // Try to find process by executable name for elevated starts with missing PID
-      const { command } = parseCommand(service.command);
-      let exeName = path.basename(command);
-      if (process.platform === "win32" && exeName && !exeName.includes(".")) {
-        exeName += ".exe";
-      }
+      const exeName = getExeName(service.command);
       if (exeName) {
         const foundPid = await findProcessByName(exeName);
         if (foundPid) {
-          db.update(services)
-            .set({ pid: foundPid })
-            .where(eq(services.id, serviceId))
-            .run();
+          db.update(services).set({ pid: foundPid }).where(eq(services.id, serviceId)).run();
           return { status: "running", pid: foundPid };
         }
       }
       // Trust the database status if process not found yet
       return { status: "running", pid: null };
     }
-    return { status: "stopped", pid: null };
+    return { status: service.status, pid: null };
   }
 
   const running = await isProcessRunningAsync(service.pid);
 
   if (!running && service.status === "running") {
     // Process died but db still shows running
-    db.update(services)
-      .set({ status: "stopped", pid: null })
-      .where(eq(services.id, serviceId))
-      .run();
+    db.update(services).set({ status: "stopped", pid: null }).where(eq(services.id, serviceId)).run();
     return { status: "stopped", pid: null };
   }
 
   return { status: running ? "running" : service.status, pid: service.pid };
 }
 
-// Clean up all running processes on shutdown
+/**
+ * 退出时结束所有服务。
+ * 会在 process.on("exit") 里调用，那里不能等异步操作，所以全部用同步方式结束进程。
+ */
 export function cleanupProcesses() {
-  // Kill in-memory tracked processes
-  for (const [_id, child] of runningProcesses.entries()) {
-    try {
-      child.kill("SIGTERM");
-    } catch {
-      // Ignore errors during cleanup
-    }
+  for (const [id, child] of runningProcesses.entries()) {
+    if (!child.pid) continue;
+    stoppingServices.add(id);
+    killTree(child.pid, true);
   }
   runningProcesses.clear();
 
-  // Also try to kill any running services recorded in the database
   try {
     const db = getDb();
     const runningServices = db.select().from(services).where(eq(services.status, "running")).all();
     for (const service of runningServices) {
-      if (service.pid) {
-        if (process.platform === "win32") {
-          try {
-            spawn("taskkill", ["/PID", service.pid.toString(), "/F", "/T"], { windowsHide: true });
-          } catch {
-            // ignore
-          }
-        } else {
-          try {
-            process.kill(service.pid, "SIGTERM");
-          } catch {
-            // ignore
-          }
-        }
+      if (service.pid && !(service.requireAdmin && isWindows)) {
+        killTree(service.pid, true);
       }
+      appendLog(service.id, "INFO", "服务管理器退出，服务已停止");
     }
-    // Mark all as stopped in database
     db.update(services).set({ status: "stopped", pid: null }).where(eq(services.status, "running")).run();
   } catch {
     // Ignore errors during cleanup
@@ -592,7 +565,7 @@ export async function autoStartServices() {
 
   for (const service of autoStartServices) {
     // Skip services that require admin on Windows - UAC prompt during boot is not ideal
-    if (service.requireAdmin && process.platform === "win32") {
+    if (service.requireAdmin && isWindows) {
       console.log(`Skipping auto-start for service ${service.name} (requires admin privileges)`);
       continue;
     }

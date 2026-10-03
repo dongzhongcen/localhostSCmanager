@@ -5,6 +5,8 @@ import superjson from "superjson";
 import type { AppRouter } from "../../api/router";
 import type { ReactNode } from "react";
 
+// trpc 客户端和 Provider 放在一起更好找，这里允许导出非组件
+// eslint-disable-next-line react-refresh/only-export-components
 export const trpc = createTRPCReact<AppRouter>();
 
 const queryClient = new QueryClient();

@@ -1,21 +1,22 @@
 {
-  "name": "my-app",
+  "name": "localhost-sc-manager",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "dev:admin": "powershell -Command \"Start-Process npm -ArgumentList 'run','dev' -Verb runAs\"",
-    "build": "vite build && esbuild api/boot.ts --platform=node --bundle --format=esm --outdir=dist --banner:js=\"import { createRequire } from 'module';const require = createRequire(import.meta.url);\"",
+    "build": "vite build && esbuild api/boot.ts --platform=node --bundle --format=esm --outdir=dist --external:better-sqlite3 --banner:js=\"import { createRequire } from 'module';const require = createRequire(import.meta.url);\"",
     "lint": "eslint .",
     "preview": "vite preview",
-    "start": "NODE_ENV=production node dist/boot.js",
+    "start": "cross-env NODE_ENV=production node dist/boot.js",
     "check": "tsc -b",
     "format": "prettier --write .",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "db:push": "drizzle-kit push"
+    "db:push": "drizzle-kit push",
+    "package:win": "node scripts/package-win.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.14.3",
@@ -62,7 +63,6 @@
     "hono": "^4.8.3",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.562.0",
-    "mysql2": "^3.14.1",
     "next-themes": "^0.4.6",
     "react": "^19.2.0",
     "react-day-picker": "^9.13.0",
@@ -85,13 +85,13 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
     "autoprefixer": "^10.4.23",
+    "cross-env": "^7.0.3",
     "drizzle-kit": "^0.31.8",
     "esbuild": "^0.27.2",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
-    "kimi-plugin-inspect-react": "^1.0.3",
     "postcss": "^8.5.6",
     "prettier": "^3.7.4",
     "tailwindcss": "^3.4.19",
@@ -101,5 +101,9 @@
     "typescript-eslint": "^8.46.4",
     "vite": "^7.2.4",
     "vitest": "^4.0.16"
+  },
+  "description": "Windows 本地服务管理工具（MySQL、Redis、Nginx 等）",
+  "engines": {
+    "node": ">=20.19"
   }
 }
